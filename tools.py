@@ -19,7 +19,7 @@ type, exactly what it returns, and what it returns when it has nothing to give.
 That last line is what your loop branches on. "Returns a list" earns nothing —
 the description has to say what is *in* the list.
 """
-
+import re
 import config  # noqa: F401 — you'll use this in search_listings
 from generate import generate
 from utils.data_loader import load_listings
@@ -28,9 +28,10 @@ from utils.data_loader import load_listings
 # ── Tool 1: search_listings ───────────────────────────────────────────────────
 
 _STOPWORDS = {
-    "a", "an", "and", "the", "for", "with", "under", "over", "in", "of"
+    "a", "an", "and", "the", "for", "with", "under", "over", "in", "of",
+    "on", "at", "to", "from", "by", "or", "but", "as", "is", "are", "be",
+    "it", "its", "this", "that", "these", "those",
 }
-"""add more later"""
 
 def _keywords(text: str) -> set[str]:
     """Lowercase words worth matching on, stopwaords removed."""
@@ -49,6 +50,15 @@ def _size_matches(wanted: str, listing_size: str) -> bool:
     if any(token.startswith("ONE SIZE") for token in listing_tokens):
         return True
     return bool(_size_token(wanted) & listing_tokens)
+
+def _listing_text(listing: dict) -> str:
+    """Everything in a listing worth scanning for keyword overlap."""
+    parts = [
+        listing.get("title", ""),
+        listing.get("description", ""),
+        " ".join(listing.get("style_tags") or []),
+    ]
+    return " ".join(parts)
 
 def search_listings(
     description: str,
@@ -101,11 +111,61 @@ def search_listings(
     Test it from a terminal before you move on:
         python -c "from tools import search_listings; print(search_listings('graphic tee', max_price=30))"
     """
-    # TODO: replace this with your implementation
-    return []
+    
+    listings = load_listings()
+
+    # 1. filter by price and size
+    filtered = []
+    for listing in listings:
+        if max_price is not None and listing["price"] > max_price:
+            continue
+        if not _size_matches(size, listing.get("size", "")):
+            continue
+        filtered.append(listing)
+
+    # 2. score by keyword overlap
+    wanted_keywords = _keywords(description)
+    scored = []
+    for listing in filtered:
+        listing_keywords = _keywords(_listing_text(listing))
+        score = len(wanted_keywords & listing_keywords)
+        if score > 0:
+            scored.append((score, listing))
+
+    # 3. sort by score descending, then cut to the limit
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [listing for _, listing in scored[: config.SEARCH_RESULT_LIMIT]]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
+
+_OUTFIT_SYSTEM = (
+    "You are a styling assistant for a thrift-shopping app. Given a candidate "
+    "item and (optionally) a list of wardrobe pieces the user already owns, "
+    "suggest one or two outfits in a few sentences.\n"
+    "If wardrobe pieces are provided, name them specifically and build the "
+    "outfit around combining them with the new item.\n"
+    "If no wardrobe pieces are provided, do not say the wardrobe is empty or "
+    "apologize for it — just give general styling advice about what kinds of "
+    "pieces (by category, color, or style) would pair well with the new item."
+)
+
+def _describe_item(item: dict) -> str:
+    brand = f" by {item['brand']}" if item.get("brand") else ""
+    return (
+        f"{item.get('title', 'an item')}{brand} — "
+        f"category: {item.get('category', 'unknown')}, "
+        f"colors: {', '.join(item.get('colors') or []) or 'unknown'}, "
+        f"style: {', '.join(item.get('style_tags') or []) or 'unknown'}"
+    )
+
+
+def _describe_wardrobe_item(item: dict) -> str:
+    return (
+        f"- {item.get('name', 'an item')} "
+        f"(category: {item.get('category', 'unknown')}, "
+        f"colors: {', '.join(item.get('colors') or []) or 'unknown'})"
+    )
 
 def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
     """
@@ -135,11 +195,34 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
     Test it from a terminal before you move on:
         python -c "from tools import suggest_outfit; from utils.data_loader import get_example_wardrobe, load_listings; print(suggest_outfit(load_listings()[0], get_example_wardrobe()))"
     """
-    # TODO: replace this with your implementation
-    return ""
+    
+    item_desc = _describe_item(new_item)
+    wardrobe_items = (wardrobe or {}).get("items") or []
+
+    if not wardrobe_items:
+        prompt = f"Candidate item:\n{item_desc}\n\nNo wardrobe pieces were provided."
+    else:
+        wardrobe_lines = "\n".join(_describe_wardrobe_item(i) for i in wardrobe_items)
+        prompt = (
+            f"Candidate item:\n{item_desc}\n\n"
+            f"Wardrobe pieces the user already owns:\n{wardrobe_lines}"
+        )
+
+    return generate(prompt, system=_OUTFIT_SYSTEM)
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
+
+_FIT_CARD_SYSTEM = (
+    "You write short social captions for a thrift-shopping app, the kind "
+    "someone would actually post when they're excited about a find — not a "
+    "product listing and not marketing copy.\n"
+    "Write two to four sentences. Mention the item once, its price once, and "
+    "the platform it's from once. Be specific about the vibe or aesthetic — "
+    "avoid generic praise like 'great find' with nothing backing it up. "
+    "Weave in the outfit you're given naturally, as what you're planning to "
+    "wear it with."
+)
 
 def create_fit_card(outfit: str, new_item: dict) -> str:
     """
@@ -175,5 +258,23 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
     Test it from a terminal before you move on:
         python -c "from tools import create_fit_card; from utils.data_loader import load_listings; print(create_fit_card('jeans and white sneakers', load_listings()[0]))"
     """
-    # TODO: replace this with your implementation
-    return ""
+    
+    if not (outfit or "").strip():
+        return (
+            "No outfit idea was given for this item, so there's nothing to "
+            "caption yet — try generating an outfit suggestion first."
+        )
+
+    item_desc = _describe_item(new_item)
+    price = new_item.get("price")
+    platform = new_item.get("platform", "the platform")
+
+    prompt = (
+        f"Item: {item_desc}\n"
+        f"Price: ${price:g}\n"
+        f"Platform: {platform}\n"
+        f"Outfit idea: {outfit}\n\n"
+        "Write the caption now."
+    )
+
+    return generate(prompt, system=_FIT_CARD_SYSTEM, cache=False)
