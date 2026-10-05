@@ -41,7 +41,7 @@
 
 <!-- Three or four sentences: what a user asks for, and what they get back. -->
 
-
+A user types a plain-language request for a thrifted item — like "vintage graphic tee under $30" or "90s track jacket in size M" — and FitFindr searches real listings data to find matches by keyword, size, and price. If it finds something, it suggests one or two outfits pairing the item with pieces the user already owns (or general styling advice if their wardrobe is empty), then writes a short, ready-to-post caption mentioning the item, its price, and its platform. If nothing in the listings matches, it stops before generating an outfit or caption and tells the user specifically what to change — a broader description, a different size, or a higher price ceiling — rather than just saying "no results."
 
 ---
 
@@ -130,7 +130,31 @@ and when it misparses something the reason is visible in the pattern rather than
 **One full query**
 
 ```
-$ python app.py ask '...'
+$ python app.py ask 'looking for a vintage graphic tee under $30'
+[1] parse_query
+      in:  looking for a vintage graphic tee under $30
+      out: dict with keys: description, size, max_price
+[2] search_listings (via MCP)
+      in:  dict with keys: description, size, max_price
+      out: 10 items: Y2K Baby Tee — Butterfly Print, Graphic Tee — 2003 Tour Bootleg Style, Vintage Band Tee — Faded Grey … +7 more
+      →    10 match(es)
+[3] select_item
+      out: Y2K Baby Tee — Butterfly Print ($18.0, depop)
+[4] suggest_outfit
+      in:  Y2K Baby Tee — Butterfly Print ($18.0, depop)
+      out: Pair this Y2K butterfly baby tee with your baggy dark-wash straight-leg jeans and chunky white sneakers for th…
+      →    10 wardrobe item(s)
+[5] create_fit_card
+      in:  Y2K Baby Tee — Butterfly Print ($18.0, depop)
+      out: Found the exact butterfly print baby tee I've been obsessing over on Depop for just $18. The little pink and p…
+
+  Found:    Y2K Baby Tee — Butterfly Print — $18.0 on depop
+
+  Outfit:   Pair this Y2K butterfly baby tee with your baggy dark-wash straight-leg jeans and chunky white sneakers for the ultimate nostalgic off-duty look. Throw your black denim jacket over top and accessorize with the black crossbody bag to lean into that effortless 2000s street style.
+
+  Fit card: Found the exact butterfly print baby tee I've been obsessing over on Depop for just $18. The little pink and purple graphics give off the cutest early 2000s mall-goth energy without trying too hard. Throwing it on with my baggy dark-wash straight-leg jeans, chunky white sneakers, and a black denim jacket for the ultimate nostalgic off-duty look.
+
+1 model calls this session, 1 served from cache, 224 prompt + 83 output tokens
 
 ```
 
@@ -170,15 +194,37 @@ Found these vintage Levi's 501 jeans on depop for $38 and I am never taking them
 
 **Moment 1**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* I gave Claude the `tools.py` starter file, including
+  the `_keywords`, `_size_token`, and `_size_matches` helper functions, and
+  asked it to explain what each one did before I built `search_listings` on
+  top of them.
+- *What came back:* Claude explained the three functions, but also flagged
+  two bugs already in the starter code: `_STOPWORDS` was missing a comma
+  after `"of"`, so Python implicitly concatenated it with the docstring on
+  the next line into one useless string instead of adding `"of"` to the
+  set; and `_size_token` called `p.strip().upper` without parentheses, which
+  referenced the method object instead of calling it, so sizes were never
+  actually uppercased.
+- *What I changed:* I added the missing comma after `"of"` in `_STOPWORDS`,
+  and changed `p.strip().upper` to `p.strip().upper()` in `_size_token`,
+  before implementing `search_listings` — a silently broken size filter
+  would have failed criterion 1 for reasons that had nothing to do with my
+  search logic.
 
 **Moment 2**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* I asked Claude to implement `create_fit_card`,
+  mentioning the requirement that three runs on the same item shouldn't
+  produce word-for-word identical captions.
+- *What came back:* Claude pointed out that calling `generate()` with its
+  default arguments leaves `cache=True`, and since `_cache_key()` hashes on
+  `(prompt, system, temperature)`, three identical calls would hit the same
+  cache entry and return the exact same string — which would look like a
+  `TEMPERATURE` problem even though the real cause was caching.
+- *What I changed:* I changed the call to
+  `generate(prompt, system=_FIT_CARD_SYSTEM, cache=False)` so that testing
+  "are three outputs different" would actually test the model's
+  variability, not the cache.
 
 <!-- ═══════════════════════ UNIT 4 — THE TEST ═══════════════════════
 
