@@ -59,24 +59,24 @@
 
 ### `search_listings`
 
-- **What it does:**
-- **Inputs:** <!-- name and type each: `max_price` (float), not "a price" -->
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Filters the listings data by `max_price` and `size` (when given), scores the remaining listings by keyword overlap between `description` and each listing's text, and returns the top matches, best first.
+- **Inputs:** <!-- name and type each: `max_price` (float), not "a price" --> `description` (str) — keywords describing the desired item; `size` (str | None) — a size string to filter by, or `None` to skip size filtering; `max_price` (float | None) — maximum price, inclusive, or `None` to skip price filtering.
+- **Returns:** A list of listing dicts (at most `config.SEARCH_RESULT_LIMIT` of them), sorted by match score descending, each with `id`, `title`, `description`, `category`, `style_tags`, `size`, `condition`, `price`, `colors`, `brand`, `platform`.
+- **When it has nothing:** Returns an empty list (`[]`) — never `None`, never raises.
 
 ### `suggest_outfit`
 
-- **What it does:**
-- **Inputs:**
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Calls the model to suggest one or two outfits pairing a candidate thrifted item with pieces from the user's existing wardrobe, or gives general styling advice if the wardrobe is empty.
+- **Inputs:** `new_item` (dict) — a listing dict for the item being considered; `wardrobe` (dict) — a wardrobe dict with an `'items'` key holding a list of wardrobe-item dicts (may be empty).
+- **Returns:** A non-empty string containing the model's outfit suggestion(s), written in prose.
+- **When it has nothing:** If `wardrobe['items']` is empty, it does not raise or return `""` — it returns a non-empty string of general styling advice for the item instead.
 
 ### `create_fit_card`
 
-- **What it does:**
-- **Inputs:**
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Calls the model to write a short, specific, two-to-four sentence social-post caption for the item, based on the suggested outfit, naming the item, its price, and its platform once each.
+- **Inputs:** `outfit` (str) — the outfit suggestion string from `suggest_outfit()`; `new_item` (dict) — the listing dict for the item.
+- **Returns:** A string containing a two-to-four sentence caption, worded differently across calls (non-deterministic, not a templated product description).
+- **When it has nothing:** If `outfit` is empty or whitespace-only, returns a descriptive fallback message string rather than raising an exception.
 
 ---
 
@@ -95,11 +95,28 @@
 
 **Branch rule:**
 
+If `search_listings` (called via `_search`, which tries MCP first and falls back to the direct tool call) returns an empty list, build a message with
+`_nothing_found_message(parsed)`, put it in `session["error"]`, and return the session without calling `suggest_outfit`. Otherwise take the first
+result (the best match, since `search_listings` returns results sorted by score descending), store it in `session["selected_item"]`, and continue to
+`suggest_outfit`.
+
 **Where it lives:** `agent.py::run_agent`
 
-**How the query is parsed:** <!-- regex, string splitting, or asking the model — say which -->
+**How the query is parsed:** <!-- regex, string splitting, or asking the model — say which --> Regex, not a model call. `parse_query()` uses three compiled patterns — `_PRICE_RE` to pull out a `$<number>` price
+ceiling, `_SIZE_RE` / `_BARE_SIZE_RE` to pull out a size token (e.g. "size M" or a trailing ", M") — and whatever text is left after stripping those two
+matches out becomes `description`. Regex is used instead of a model call because it's free, deterministic (same input → same output, every time),
+and when it misparses something the reason is visible in the pattern rather than being a model's opinion.
 
 **What moves through the session:** <!-- which fields, in what order -->
+1. `query` — the raw text the user typed.
+2. `parsed` — the dict `parse_query()` returns: `description`, `size`, `max_price`.
+3. `search_results` — the full list `_search()` returns.
+4. `selected_item` — `search_results[0]`, set only on the non-empty branch.
+5. `wardrobe` — passed in unchanged from the caller.
+6. `outfit_suggestion` — the string `suggest_outfit()` returns.
+7. `fit_card` — the string `create_fit_card()` returns.
+8. `error` — `None` unless the run stopped early (empty search, or
+   `ModelUnavailable`), in which case it holds the message shown to the user.
 
 ---
 
